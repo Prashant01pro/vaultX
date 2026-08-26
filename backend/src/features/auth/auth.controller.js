@@ -1,6 +1,7 @@
-import { registerUserService, loginUserService, refreshTokenService, rotateRefreshTokenService, logoutUserService, revokedAllUserSessionsService, resetPasswordService, forgotPasswordService } from './auth.services.js'
+import { registerUserService, loginUserService, refreshTokenService, rotateRefreshTokenService, logoutUserService, revokedAllUserSessionsService, resetPasswordService, forgotPasswordService, googleLoginService } from './auth.services.js'
 import { catchAsync } from '../../utils/catchAsync.js'
 import AppError from '../../utils/appError.js';
+import crypto from 'crypto';
 
 const accessCookieOptions = {
     httpOnly: true,
@@ -167,22 +168,22 @@ export const resetPassword = catchAsync(async (req, res) => {
 export const forgotPassword = catchAsync(async (req, res) => {
     const { email } = req.body;
 
-    if(!email){
-        throw new AppError('Email is required',400);
+    if (!email) {
+        throw new AppError('Email is required', 400);
     }
 
     await forgotPasswordService(email);
 
     res.status(200).json({
-        message:'If an account exists with this email, a password reset lint has been sent'
+        message: 'If an account exists with this email, a password reset lint has been sent'
     })
 })
 
-export const verifyEmail=catchAsync(async(req,res)=>{
-    const {verificationToken}=req.body;
+export const verifyEmail = catchAsync(async (req, res) => {
+    const { verificationToken } = req.body;
 
     if (!verificationToken) {
-        throw new AppError('Verification token is required',400);
+        throw new AppError('Verification token is required', 400);
     }
 
     await verifyEmailService(verificationToken);
@@ -192,11 +193,11 @@ export const verifyEmail=catchAsync(async(req,res)=>{
     });
 });
 
-export const changePassword=catchAsync(async(req,res)=>{
-    const{currentPassword,newPassword,confirmPassword}=req.body;
+export const changePassword = catchAsync(async (req, res) => {
+    const { currentPassword, newPassword, confirmPassword } = req.body;
 
-     if (!currentPassword ||!newPassword ||!confirmPassword) {
-        throw new AppError('All password fields are required',400);
+    if (!currentPassword || !newPassword || !confirmPassword) {
+        throw new AppError('All password fields are required', 400);
     }
 
     if (newPassword !== confirmPassword) {
@@ -204,13 +205,68 @@ export const changePassword=catchAsync(async(req,res)=>{
     }
 
     if (currentPassword === newPassword) {
-        throw new AppError('New password must be different from the current password',400);
+        throw new AppError('New password must be different from the current password', 400);
     }
 
-    await changePasswordService(req.user.id,currentPassword,newPassword);
+    await changePasswordService(req.user.id, currentPassword, newPassword);
 
     res.status(200).json({
         message:
             'Password changed successfully. Please log in again.'
     });
 });
+
+export const googleLogin = (req, res) => {
+    const state = crypto.randomBytes(32).toString('hex');
+
+    res.cookie('googleOAuthState', state, {
+        httpOnly: true,
+        secure: false,         // in production:true process.env.NODE_ENV ==='production',
+        sameSite: 'lax',
+        maxAge: 10 * 60 * 1000,
+        path: '/'
+
+    })
+
+    const googleAuthUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+    googleAuthUrl.searchParams.set('client_id', process.env.GOOGLE_CLIENT_ID);
+    googleAuthUrl.searchParams.set('redirect_uri', GOOGLE_CLIENT_URL);
+    googleAuthUrl.searchParams.set('response_type', 'code');
+    googleAuthUrl.searchParams.set('scope', 'openid email profile');
+    googleAuthUrl.searchParams.set('state', state);
+    googleAuthUrl.searchParams.set('prompt', 'select_account');
+
+    res.redirect(
+        googleAuthUrl.toString()
+    );
+}
+
+export const googleCallback = catchAsync(async (req, res) => {
+    const { code, state, error } = req.query;
+
+    const savedState = req.cookies.googleOAuthState;
+
+    res.clearCookie('googleOAuthState', {
+        httpOnly: true,
+        secure: false,         // in production:true process.env.NODE_ENV ==='production',
+        sameSite: 'lax',
+        path: '/'
+
+    })
+
+    if (error) {
+        throw new AppError('Google authentication was cancelled', 401);
+    }
+
+    if (!code || !state || !savedState || state !== savedState) {
+        throw new AppError('Invalid OAuth state', 401);
+    }
+
+    const {user, accessToken,refreshToken,csrfToken}=await googleLoginService(code,req);
+
+    res.cookie('accessToken',accessToken,accessCookieOptions)
+    res.cookie('refreshToken',refreshToken,refreshCookieOptions)
+    res.cookie('csrfToken',csrfToken,csrfCookieOptions)
+
+    res.redirect(`${process.env.CLIENT_URL}/oauth-success`)
+})

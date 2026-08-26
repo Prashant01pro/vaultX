@@ -37,7 +37,7 @@ const generateAccessToken = (user, sid) => {
         {
             id: user._id.toString(),
             username: user.username,
-            role:user.role,
+            role: user.role,
             sid,
             tokenVersion: user.tokenVersion
         },
@@ -67,7 +67,7 @@ const generateCsrfToken = () => {
     return crypto.randomBytes(32).toString('hex');
 };
 
-const createSessionAndTokens = async (user, req) => {
+export const createSessionAndTokens = async (user, req) => {
     const sessionId = new mongoose.Types.ObjectId().toString();
 
     const refreshTokenId = crypto.randomUUID();
@@ -206,12 +206,12 @@ export const loginUserService = async (email, password, req) => {
         }
 
         await user.save();
-        throw new AppError("Invalid Email or Password",401)
+        throw new AppError("Invalid Email or Password", 401)
     }
 
     // Successful login clears previous failures.
-    user.failedLoginAttempts=0;
-    user.lockedUntil=null;
+    user.failedLoginAttempts = 0;
+    user.lockedUntil = null;
 
     await user.save();
 
@@ -533,3 +533,78 @@ export const changePasswordService = async (userId, currentPassword, newPassword
     );
 }
 
+export const googleLoginService = async (authorizationCode, req) => {
+    const tokenResponse = await fetch('http://oauth2.googleapis.com/token', {
+        method: "POST",
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+            code: authorizationCode,
+            client_id: process.env.GOOGLE_CLIENT_ID,
+            client_secret: process.env.GOOGLE_CLIENT_SECRET,
+            redirect_uri: process.env.GOOGLE_CALLBACK_URL,
+            grant_type: 'authorization_code'
+        })
+    });
+
+    const tokenData = await tokenResponse.json();
+
+    if (!tokenResponse.ok || !tokenData.access_token) {
+        throw new AppError('Google authorization failed', 401);
+    }
+
+    const profileResponse = await fetch('https://openidconnect.googleapis.com/v1/userinfo', {
+        headers: { Authorization: `Bearer ${tokenData.access_token}` }
+    })
+
+    const googleProfile = await profileResponse.json();
+
+    if (!profileResponse.ok || !googleProfile.sub || !googleProfile.email) {
+        throw new AppError('Could not receive Google profile', 401)
+    }
+
+    if (!googleProfile.email_verified) {
+        throw new AppError('Google email is not verified', 403);
+    }
+
+    let user = await authUser.findOne({
+        authProvider: 'google',
+        providerId: googleProfile.sub
+    })
+
+    if (!user) {
+        const existingEmailUser = await authUser.findOne({ email: googleProfile.email });
+        if (existingEmailUser) {
+            throw new AppError('An account with this email already exists. Log in with your password first', 409)
+        }
+    }
+
+    const baseUsername = googleProfile.email
+        .split('@')[0]
+        .replace(/[^a-zA-Z0-9_]/g, '')
+        .slice(0, 20) || 'googleuser';
+
+    const username = `${baseUsername}_${crypto
+        .randomBytes(3)
+        .toString('hex')}`;
+
+    const randomPassword=crypto.randomBytes(32).toString('hex');
+    const salt=await bcrypt.genSalt(12)
+
+    const hashPassword=await bcrypt.hash(randomPassword,salt)
+
+    user= await authUser.create({
+        username,
+        name:googleProfile.name || googleProfile.email.trim().toLowerCase(),
+        password:hashPassword,
+        authProvider:'google',
+        providerId:googleProfile.sub,
+        isEmailVerified:true
+    })
+
+    const tokens=await createSessionAndTokens(user,req);
+
+    return {
+        user,
+        ...tokens
+    }
+}

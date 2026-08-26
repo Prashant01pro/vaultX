@@ -1,9 +1,10 @@
 import express from "express"
-import { register, login, refreshToken, logout, logoutAllDevices, resetPassword, forgotPassword, verifyEmail, changePassword } from "./auth.controller.js"
+import { register, login, refreshToken, logout, logoutAllDevices, resetPassword, forgotPassword, verifyEmail, changePassword, googleLogin, googleCallback } from "./auth.controller.js"
 import { authenticateToken } from "./auth.middleware.js";
 import { csrfProtection } from "./csrf.middleware.js";
 import { authorizeRoles } from "./role.middleware.js";
 import { authorizePermissions } from "./permissions.middleware.js";
+import { authorizeAdminOrSelf } from "./authorization.middleware.js";
 
 const router = express.Router()
 
@@ -16,6 +17,7 @@ router.post('/reset-password', resetPassword);
 router.post('/forgot-password', forgotPassword);
 router.post('/verify-email', verifyEmail);
 router.post('/change-password', authenticateToken, csrfProtection, changePassword);
+
 router.get('/admin-only', authenticateToken, authorizeRoles('admin'), (req, res) => {
     res.status(200).json({
         message: 'Only admins can access this route'
@@ -55,6 +57,9 @@ router.get('/protected', authenticateToken, (req, res) => {
         message: `Hello i am ${req.user.username} ,I have the access to this route`
     })
 })
+
+router.get('/google',googleLogin);
+router.get('/google/callback',googleCallback)
 
 export default router
 
