@@ -2,7 +2,7 @@ import AppError from "../../utils/appError.js";
 
 export const authorizeAdminOrSelf=(req,res,next)=>{
     const requestedUserId=req.params.id;
-    const isAdmin=req.user.role='admin';
+    const isAdmin = req.user.role === 'admin';
 
     const isSelf=req.user.id === requestedUserId;
 

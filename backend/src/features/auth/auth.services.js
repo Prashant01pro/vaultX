@@ -3,7 +3,7 @@ import { authUser } from './auth.model.js'
 import AppError from '../../utils/appError.js'
 import jwt from "jsonwebtoken";
 
-import crypto, { setEngine } from "crypto";
+import crypto from "crypto";
 import mongoose from 'mongoose';
 import { authSession } from './auth.session.model.js';
 
@@ -147,7 +147,7 @@ export const registerUserService = async (username, name, email, password) => {
             password: hashedPassword,
             isEmailVerified: false,
             emailVerificationTokenHash: verificationTokenHash,
-            emailVerificationExpires: new Date(Date.now() + 24 * 60 * 1000)
+            emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000)
         })
 
         const verificationLink = `${process.env.CLIENT_URL}/verify-email/${verificationToken}`;
@@ -188,7 +188,11 @@ export const loginUserService = async (email, password, req) => {
 
     //lockout feature:
     // Check whether the account is currently locked.
-    if (user.lockedUntil && user.lockedUntil <= now) {
+    if (user.lockedUntil && user.lockedUntil > new Date()) {
+        throw new AppError('Account temporarily locked. Please try again later.', 423);
+    }
+
+    if (user.lockedUntil && user.lockedUntil <= new Date()) {
         user.failedLoginAttempts = 0;
         user.lockedUntil = null;
 
@@ -207,6 +211,10 @@ export const loginUserService = async (email, password, req) => {
 
         await user.save();
         throw new AppError("Invalid Email or Password", 401)
+    }
+
+    if (user.authProvider === 'local' && !user.isEmailVerified) {
+        throw new AppError('Please verify your email before logging in', 403);
     }
 
     // Successful login clears previous failures.
@@ -467,7 +475,7 @@ export const forgotPasswordService = async (email) => {
     user.passwordResetTokenHash = resetTokenHash;
 
     //valid for 15 minute
-    user.passwordResetExpires = new Date(Date.now + 15 * 60 * 1000);
+    user.passwordResetExpires = new Date(Date.now() + 15 * 60 * 1000);
     await user.save();
 
     const resetLink = `${process.env.CLIENT_URL}/reset-password/${resetToken}`;
@@ -578,6 +586,11 @@ export const googleLoginService = async (authorizationCode, req) => {
         }
     }
 
+    if (user) {
+        const tokens = await createSessionAndTokens(user, req);
+        return { user, ...tokens };
+    }
+
     const baseUsername = googleProfile.email
         .split('@')[0]
         .replace(/[^a-zA-Z0-9_]/g, '')
@@ -587,24 +600,136 @@ export const googleLoginService = async (authorizationCode, req) => {
         .randomBytes(3)
         .toString('hex')}`;
 
-    const randomPassword=crypto.randomBytes(32).toString('hex');
-    const salt=await bcrypt.genSalt(12)
+    const randomPassword = crypto.randomBytes(32).toString('hex');
+    const salt = await bcrypt.genSalt(12)
 
-    const hashPassword=await bcrypt.hash(randomPassword,salt)
+    const hashPassword = await bcrypt.hash(randomPassword, salt)
 
-    user= await authUser.create({
+    user = await authUser.create({
         username,
-        name:googleProfile.name || googleProfile.email.trim().toLowerCase(),
-        password:hashPassword,
-        authProvider:'google',
-        providerId:googleProfile.sub,
-        isEmailVerified:true
+        name: googleProfile.name || googleProfile.email.trim().toLowerCase(),
+        email: googleProfile.email.trim().toLowerCase(),
+        password: hashPassword,
+        authProvider: 'google',
+        providerId: googleProfile.sub,
+        isEmailVerified: true
     })
 
-    const tokens=await createSessionAndTokens(user,req);
+    const tokens = await createSessionAndTokens(user, req);
 
     return {
         user,
         ...tokens
     }
+}
+
+export const githubLoginService = async (authorizationCode, req) => {
+    const tokenResponse = await fetch('https://github.com/login/oauth/access_token',
+        {
+            method: 'POST',
+            headers: {
+                Accept: 'application/json',
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: new URLSearchParams({
+                client_id: process.env.GITHUB_CLIENT_ID,
+                client_secret: process.env.GITHUB_CLIENT_SECRET,
+                code: authorizationCode,
+                redirect_uri: process.env.GITHUB_CALLBACK_URL
+            })
+        }
+    );
+
+    const tokenData = await tokenResponse.json();
+
+    if (!tokenResponse.ok || !tokenData.access_token) {
+        throw new AppError('GitHub authorization failed', 401);
+    }
+
+    const githubHeaders = {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${tokenData.access_token}`,
+        'X-GitHub-Api-Version': '2022-11-28',
+        'User-Agent': 'vaultX'
+    };
+
+    const profileResponse = await fetch('https://api.github.com/user',
+        {
+            headers: githubHeaders
+        }
+    );
+
+    const githubProfile =await profileResponse.json();
+
+    if (!profileResponse.ok ||!githubProfile.id) {
+        throw new AppError('Could not retrieve GitHub profile',401);
+    }
+
+    const emailResponse = await fetch('https://api.github.com/user/emails',
+        {
+            headers: githubHeaders
+        }
+    );
+
+    const githubEmails =await emailResponse.json();
+
+    if (!emailResponse.ok ||!Array.isArray(githubEmails)) {
+        throw new AppError('Could not retrieve GitHub email',401);
+    }
+
+    const verifiedEmail =
+        githubEmails.find((email) =>email.primary && email.verified);
+
+    if (!verifiedEmail) {
+        throw new AppError('No verified GitHub email was found',403);
+    }
+
+    const providerId =String(githubProfile.id);
+
+    let user = await authUser.findOne({authProvider: 'github',providerId});
+
+    if (!user) {
+        const existingEmailUser =
+            await authUser.findOne({email: verifiedEmail.email.trim().toLowerCase()});
+
+        if (existingEmailUser) {
+            throw new AppError('An account with this email already exists. Log in with your password first.',409);
+        }
+
+        const baseUsername =githubProfile.login
+                .replace(/[^a-zA-Z0-9_]/g, '')
+                .slice(0, 20) || 'githubuser';
+
+        const username =`${baseUsername}_${crypto.randomBytes(3).toString('hex')}`;
+
+        const randomPassword =crypto.randomBytes(32).toString('hex');
+
+        const salt = await bcrypt.genSalt(12);
+
+        const hashedPassword = await bcrypt.hash(randomPassword,salt);
+
+        user = await authUser.create({
+            username,
+            name:
+                githubProfile.name ||
+                githubProfile.login,
+            email:
+                verifiedEmail.email
+                    .trim()
+                    .toLowerCase(),
+            password: hashedPassword,
+            authProvider: 'github',
+            providerId,
+            isEmailVerified: true
+        });
+    }
+
+    const tokens = await createSessionAndTokens(user, req);
+
+    return {
+        user,
+        ...tokens
+    };
+
+
 }

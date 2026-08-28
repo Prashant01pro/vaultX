@@ -1,4 +1,4 @@
-import { registerUserService, loginUserService, refreshTokenService, rotateRefreshTokenService, logoutUserService, revokedAllUserSessionsService, resetPasswordService, forgotPasswordService, googleLoginService } from './auth.services.js'
+import { registerUserService, loginUserService, rotateRefreshTokenService, logoutUserService, revokedAllUserSessionsService, resetPasswordService, forgotPasswordService, verifyEmailService, changePasswordService, googleLoginService, githubLoginService } from './auth.services.js'
 import { catchAsync } from '../../utils/catchAsync.js'
 import AppError from '../../utils/appError.js';
 import crypto from 'crypto';
@@ -15,7 +15,7 @@ const refreshCookieOptions = {
     httpOnly: true,
     secure: false,
     sameSite: 'lax',
-    maxAge: 7 * 24 * 60 * 1000,
+    maxAge: 7 * 24 * 60 * 60 * 1000,
     //after session function creation in auth.service.js
     // path: '/auth/refresh'
     path: '/auth'
@@ -216,6 +216,18 @@ export const changePassword = catchAsync(async (req, res) => {
     });
 });
 
+// Used by the client on app startup to restore the authenticated user.
+export const currentUser = catchAsync(async (req, res) => {
+    res.status(200).json({
+        user: {
+            id: req.user.id,
+            username: req.user.username,
+            role: req.user.role,
+            permissions: req.user.permissions
+        }
+    });
+});
+
 export const googleLogin = (req, res) => {
     const state = crypto.randomBytes(32).toString('hex');
 
@@ -230,7 +242,7 @@ export const googleLogin = (req, res) => {
 
     const googleAuthUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
     googleAuthUrl.searchParams.set('client_id', process.env.GOOGLE_CLIENT_ID);
-    googleAuthUrl.searchParams.set('redirect_uri', GOOGLE_CLIENT_URL);
+    googleAuthUrl.searchParams.set('redirect_uri', process.env.GOOGLE_CALLBACK_URL);
     googleAuthUrl.searchParams.set('response_type', 'code');
     googleAuthUrl.searchParams.set('scope', 'openid email profile');
     googleAuthUrl.searchParams.set('state', state);
@@ -270,3 +282,83 @@ export const googleCallback = catchAsync(async (req, res) => {
 
     res.redirect(`${process.env.CLIENT_URL}/oauth-success`)
 })
+
+export const githubLogin = (req, res) => {
+    const state = crypto.randomBytes(32).toString('hex');
+
+    res.cookie('githubOAuthState',state,
+        {
+            httpOnly: true,
+            secure:false,            //process.env.NODE_ENV ==='production',
+            sameSite: 'lax',
+            maxAge: 10 * 60 * 1000,
+            path: '/'
+        }
+    );
+
+    const githubAuthUrl = new URL('https://github.com/login/oauth/authorize');
+
+    githubAuthUrl.searchParams.set('client_id',process.env.GITHUB_CLIENT_ID);
+
+    githubAuthUrl.searchParams.set('redirect_uri',process.env.GITHUB_CALLBACK_URL);
+
+    githubAuthUrl.searchParams.set('scope','read:user user:email');
+
+    githubAuthUrl.searchParams.set('state',state);
+
+    res.redirect(
+        githubAuthUrl.toString()
+    );
+};
+
+
+export const githubCallback = catchAsync(
+    async (req, res) => {
+        const {code,state,error} = req.query;
+
+        const savedState =req.cookies.githubOAuthState;
+
+        res.clearCookie('githubOAuthState',
+            {
+                httpOnly: true,
+                secure:
+                    process.env.NODE_ENV ===
+                    'production',
+                sameSite: 'lax',
+                path: '/'
+            }
+        );
+
+        if (error) {
+            throw new AppError('GitHub authentication was cancelled',401);
+        }
+
+        if (!code ||!state ||!savedState ||state !== savedState) {
+            throw new AppError('Invalid OAuth state',401);
+        }
+
+        const {user,accessToken,refreshToken,csrfToken} = await githubLoginService(code,req);
+
+        res.cookie(
+            'accessToken',
+            accessToken,
+            accessCookieOptions
+        );
+
+        res.cookie(
+            'refreshToken',
+            refreshToken,
+            refreshCookieOptions
+        );
+
+        res.cookie(
+            'csrfToken',
+            csrfToken,
+            csrfCookieOptions
+        );
+
+        res.redirect(
+            `${process.env.CLIENT_URL}/oauth-success`
+        );
+    }
+);
