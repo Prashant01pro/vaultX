@@ -1,8 +1,10 @@
 import express from "express"
-import { globalErrorHandler } from "./middlewares/error.middleware.js";
-import authRouter from "./features/auth/auth.route.js"
 import cookieParser from "cookie-parser"
 import cors from 'cors'
+import { globalErrorHandler } from "./middlewares/error.middleware.js";
+
+import authRouter from "./features/auth/auth.route.js"
+import userRouter from './features/users/user.route.js'
 
 const app = express();
 
@@ -20,6 +22,7 @@ app.use(express.urlencoded({ extended: true }))
 app.use(cookieParser())
 
 app.use('/auth', authRouter)
+app.use('/users',userRouter)
 
 app.get('/health', (req, res) => {
     res.status(200).json({

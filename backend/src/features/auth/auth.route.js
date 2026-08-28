@@ -1,5 +1,5 @@
 import express from "express"
-import { register, login, refreshToken, logout, logoutAllDevices, resetPassword, forgotPassword, verifyEmail, changePassword, currentUser, googleLogin, googleCallback, githubLogin, githubCallback } from "./auth.controller.js"
+import { register, login, refreshToken, logout, logoutAllDevices, resetPassword, forgotPassword, verifyEmail, changePassword, currentUser, googleLogin, googleCallback, githubLogin, githubCallback, listSessions, revokeSession } from "./auth.controller.js"
 import { authenticateToken } from "./auth.middleware.js";
 import { csrfProtection } from "./csrf.middleware.js";
 import { authorizeRoles } from "./role.middleware.js";
@@ -59,6 +59,9 @@ router.get('/google/callback',googleCallback)
 
 router.get('/github',githubLogin);
 router.get('/github/callback',githubCallback)
+
+router.get('/sessions',authenticateToken,listSessions)
+router.delete('/sessions/:sessionId',authenticateToken,csrfProtection,revokeSession)
 
 export default router
 

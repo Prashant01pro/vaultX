@@ -1,4 +1,4 @@
-import { registerUserService, loginUserService, rotateRefreshTokenService, logoutUserService, revokedAllUserSessionsService, resetPasswordService, forgotPasswordService, verifyEmailService, changePasswordService, googleLoginService, githubLoginService } from './auth.services.js'
+import { registerUserService, loginUserService, rotateRefreshTokenService, logoutUserService, revokedAllUserSessionsService, resetPasswordService, forgotPasswordService, verifyEmailService, changePasswordService, googleLoginService, githubLoginService, listUserSessionService, revokeUserSessionService } from './auth.services.js'
 import { catchAsync } from '../../utils/catchAsync.js'
 import AppError from '../../utils/appError.js';
 import crypto from 'crypto';
@@ -362,3 +362,19 @@ export const githubCallback = catchAsync(
         );
     }
 );
+
+export const listSessions=catchAsync(async(req,res)=>{
+    const sessions=await listUserSessionService(req.user.id,req.session._id.toString())
+
+    res.status(200).json({
+        sessions
+    })
+})
+
+export const revokeSession=catchAsync(async(req,res)=>{
+    await revokeUserSessionService(req.user.id,req.params.sessionId);
+
+    res.status(200).json({
+        message:'Session revoked successfully'
+    })
+})

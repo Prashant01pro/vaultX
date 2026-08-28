@@ -3,9 +3,10 @@ import { authUser } from './auth.model.js'
 import AppError from '../../utils/appError.js'
 import jwt from "jsonwebtoken";
 
-import crypto from "crypto";
+import crypto, { createDecipheriv } from "crypto";
 import mongoose from 'mongoose';
 import { authSession } from './auth.session.model.js';
+import { currentUser } from './auth.controller.js';
 
 const REFRESH_TOKEN_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS = 5;
@@ -36,8 +37,8 @@ const generateAccessToken = (user, sid) => {
     return jwt.sign(
         {
             id: user._id.toString(),
-            username: user.username,
-            role: user.role,
+            // username: user.username,
+            // role: user.role,
             sid,
             tokenVersion: user.tokenVersion
         },
@@ -185,6 +186,11 @@ export const loginUserService = async (email, password, req) => {
     if (!user) {
         throw new AppError("Invalid Email or Password", 401)
     }
+
+    // add for implement deactivate account feature
+    if (user.isActive === false) {
+    throw new AppError('This account has been deactivated',403);
+}
 
     //lockout feature:
     // Check whether the account is currently locked.
@@ -659,10 +665,10 @@ export const githubLoginService = async (authorizationCode, req) => {
         }
     );
 
-    const githubProfile =await profileResponse.json();
+    const githubProfile = await profileResponse.json();
 
-    if (!profileResponse.ok ||!githubProfile.id) {
-        throw new AppError('Could not retrieve GitHub profile',401);
+    if (!profileResponse.ok || !githubProfile.id) {
+        throw new AppError('Could not retrieve GitHub profile', 401);
     }
 
     const emailResponse = await fetch('https://api.github.com/user/emails',
@@ -671,42 +677,42 @@ export const githubLoginService = async (authorizationCode, req) => {
         }
     );
 
-    const githubEmails =await emailResponse.json();
+    const githubEmails = await emailResponse.json();
 
-    if (!emailResponse.ok ||!Array.isArray(githubEmails)) {
-        throw new AppError('Could not retrieve GitHub email',401);
+    if (!emailResponse.ok || !Array.isArray(githubEmails)) {
+        throw new AppError('Could not retrieve GitHub email', 401);
     }
 
     const verifiedEmail =
-        githubEmails.find((email) =>email.primary && email.verified);
+        githubEmails.find((email) => email.primary && email.verified);
 
     if (!verifiedEmail) {
-        throw new AppError('No verified GitHub email was found',403);
+        throw new AppError('No verified GitHub email was found', 403);
     }
 
-    const providerId =String(githubProfile.id);
+    const providerId = String(githubProfile.id);
 
-    let user = await authUser.findOne({authProvider: 'github',providerId});
+    let user = await authUser.findOne({ authProvider: 'github', providerId });
 
     if (!user) {
         const existingEmailUser =
-            await authUser.findOne({email: verifiedEmail.email.trim().toLowerCase()});
+            await authUser.findOne({ email: verifiedEmail.email.trim().toLowerCase() });
 
         if (existingEmailUser) {
-            throw new AppError('An account with this email already exists. Log in with your password first.',409);
+            throw new AppError('An account with this email already exists. Log in with your password first.', 409);
         }
 
-        const baseUsername =githubProfile.login
-                .replace(/[^a-zA-Z0-9_]/g, '')
-                .slice(0, 20) || 'githubuser';
+        const baseUsername = githubProfile.login
+            .replace(/[^a-zA-Z0-9_]/g, '')
+            .slice(0, 20) || 'githubuser';
 
-        const username =`${baseUsername}_${crypto.randomBytes(3).toString('hex')}`;
+        const username = `${baseUsername}_${crypto.randomBytes(3).toString('hex')}`;
 
-        const randomPassword =crypto.randomBytes(32).toString('hex');
+        const randomPassword = crypto.randomBytes(32).toString('hex');
 
         const salt = await bcrypt.genSalt(12);
 
-        const hashedPassword = await bcrypt.hash(randomPassword,salt);
+        const hashedPassword = await bcrypt.hash(randomPassword, salt);
 
         user = await authUser.create({
             username,
@@ -732,4 +738,44 @@ export const githubLoginService = async (authorizationCode, req) => {
     };
 
 
+}
+
+export const listUserSessionService = async (userId, currentSessionId) => {
+    const session = await authSession.find({
+        userId,
+        revokedAt: null,
+        expiresAt: { $gt: new Date() }
+    }).sort({ lastUsedAt: -1, createAt: -1 });
+
+    return session.map((session) => ({
+        id: session._id,
+        userAgent: session.userAgent,
+        ipAddress: session.ipAddress,
+        createdAt: session.createdAt,
+        lastUsedAt: session.lastUsedAt,
+        expiresAt: session.expiresAt,
+        current: session._id.toString() === currentSessionId
+    }))
+}
+
+export const revokeUserSessionService = async (userId, sessionId) => {
+    const session = await authSession.findOneAndUpdate(
+        {
+            _id: sessionId,
+            userId,
+            revokedAt: null
+        },
+        {
+            $set: {
+                revokedAt: new Date()
+            }
+        },
+        { new: true }
+    )
+
+    if (!session) {
+        throw new AppError('Session not found or already revoked',404);
+    }
+
+    return session;
 }
