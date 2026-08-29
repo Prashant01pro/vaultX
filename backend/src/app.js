@@ -1,6 +1,7 @@
 import express from "express"
 import { globalErrorHandler } from "./middlewares/error.middleware.js";
 import authRouter from "./features/auth/auth.route.js"
+import vaultRouter from './features/vaults/vault.route.js'
 import cookieParser from "cookie-parser"
 
 const app = express();
@@ -12,6 +13,7 @@ app.use(express.urlencoded({extended:true}))
 app.use(cookieParser())
 
 app.use('/auth',authRouter)
+app.use('/vaults',vaultRouter)
 
 app.get('/health',(req,res)=>{
     res.status(200).json({
