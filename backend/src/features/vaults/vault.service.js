@@ -1,6 +1,9 @@
 import AppError from "../../utils/appError.js";
+import { authUser } from "../auth/auth.model.js";
 import { Vault } from "./vault.model";
 import mongoose from "mongoose";
+import bcrypt from 'bcr'
+import { VaultMember } from "./vault-member.model.js";
 
 
 
@@ -43,7 +46,7 @@ export const createVaultService = async (userId, { name, description = '' }) => 
 }
 
 export const listUserVaultsService = async (userId) => {
-    return Vault.find({ userId: userId, isArchived: false }).sort({ isDefault: -1, createdAt: 1 })
+    return Vault.find({ userId: userId, isArchived: false, isDeleted: false }).sort({ isDefault: -1, createdAt: 1 })
 }
 
 export const updateVaultService = async (userId, vaultId, { name, description }) => {
@@ -54,7 +57,8 @@ export const updateVaultService = async (userId, vaultId, { name, description })
     const vault = await Vault.findOne({
         _id: vaultId,
         ownerId: userId,
-        isArchived: false
+        isArchived: false,
+        isDeleted: false
     })
 
     if (!vault) {
@@ -76,7 +80,7 @@ export const updateVaultService = async (userId, vaultId, { name, description })
         const nameNormalized = cleanName.toLowerCase();
 
         const duplicate = await Vault.findOne({
-            ownerId: userId, nameNormalized, _id: { $ne: vaultId }
+            ownerId: userId, nameNormalized, isDeleted: false, _id: { $ne: vaultId }
         });
 
         if (duplicate) {
@@ -117,7 +121,7 @@ export const archiveVaultService = async (userId, vaultId) => {
         throw new AppError('Invalid vault ID', 400);
     }
 
-    const vault = await Vault.findOne({ _id: vaultId, ownerId: userId, isArchived: false });
+    const vault = await Vault.findOne({ _id: vaultId, ownerId: userId, isArchived: false, isDeleted: false });
     if (!vault) {
         throw new AppError('Vault not found', 404);
     }
@@ -142,7 +146,7 @@ export const restoreVaultService = async (userId, vaultId) => {
         throw new AppError('Invalid vault ID', 400)
     }
 
-    const vault = await Vault.findOne({ _id: vaultId, ownerId: userId, isArchived: true });
+    const vault = await Vault.findOne({ _id: vaultId, ownerId: userId, isArchived: true, isDeleted: false });
 
     if (!vault) {
         throw new AppError('Archived vault not found', 404);
@@ -164,7 +168,8 @@ export const setDefaultVaultService = async (userId, vaultId) => {
     const vault = await Vault.findOne({
         _id: vaultId,
         ownerId: userId,
-        isArchived: false
+        isArchived: false,
+        isDeleted: false
     });
 
     if (!vault) {
@@ -189,10 +194,207 @@ export const setDefaultVaultService = async (userId, vaultId) => {
         await vault.save();
     } catch (error) {
         if (error.code === 11000) {
-            throw new AppError('Could not set default vault',409);
+            throw new AppError('Could not set default vault', 409);
         }
         throw error;
     }
 
     return vault;
+};
+
+export const deletedVaultService = async (userId, vaultId) => {
+    if (!mongoose.isValidObjectId(vaultId)) {
+        throw new AppError('Invalid vault ID', 400);
+    }
+
+    const vault = await Vault.findOne({
+        _id: vaultId,
+        ownerId: userId,
+        isDeleted: false
+    })
+
+    if (!vault) {
+        throw new AppError('Vault not found', 404);
+    }
+
+    if (vault.isDefault) {
+        throw new AppError('Set another vault as default before deleting this vault', 400
+        );
+    }
+
+    vault.isDeleted = true;
+    vault.deletedAt = new Date();
+    vault.isArchived = true;
+    vault.archivedAt = vault.archivedAt || new Date();
+
+    await vault.save()
+    return vault;
+}
+
+export const listDeletedVaultsService = async (userId) => {
+    return Vault.find({ ownerId: userId, isDeleted: true }).sort({ deletedAt: -1 });
+};
+
+export const restoreDeletedVaultService = async (userId, vaultId) => {
+    if (!mongoose.isValidObjectId(vaultId)) {
+        throw new AppError('Invalid vault ID', 400);
+    }
+
+    const vault = await Vault.findOne({
+        _id: vaultId,
+        ownerId: userId,
+        isDeleted: true
+    });
+
+    if (!vault) {
+        throw new AppError('Deleted vault not found', 404);
+    }
+
+    const duplicate = await Vault.findOne({
+        ownerId: userId,
+        nameNormalized: vault.nameNormalized,
+        isDeleted: false
+    });
+
+    if (duplicate) {
+        throw new AppError('An active vault already uses this name');
+    }
+
+    vault.isDeleted = false;
+    vault.deletedAt = null;
+    vault.isArchived = false;
+    vault.archivedAt = null;
+    vault.isDefault = false;
+
+    await vault.save();
+
+    return vault;
+};
+
+export const permanentlyDeleteVaultService = async (userId, vaultId, currentPassword, confirmationName) => {
+    const user = await authUser.findById(userId).select('+password');
+
+    if (!user) {
+        throw new AppError('User no longer exists', 404);
+    }
+
+    const passwordMatches = await bcrypt.compare(currentPassword, user.pass);
+
+    if (!passwordMatches) {
+        throw new AppError('Current password is incorrect', 401);
+    }
+
+    const vault = await Vault.findOne({
+        _id: vaultId,
+        ownerId: userId,
+        isDeleted: true
+    })
+
+    if (!vault) {
+        throw new AppError('Deleted vault not found', 404)
+    }
+
+    if (confirmationName !== vault.name) {
+        throw new AppError('Vault name confirmation does not match', 400)
+    }
+
+    await Vault.deleteOne({ _id: vault._id, ownerId: userId })
+}
+
+export const addVaultMemberService = async (ownerId, vaultId, ElementInternals, role = 'viewer') => {
+    const vault = await Vault.findOne({
+        _id: vaultId,
+        ownerId,
+        isDeleted: false
+    })
+
+    if (!vault) {
+        throw new AppError('Vault not found', 404);
+    }
+
+    const allowedRoles = ['admin', 'editor', 'viewer'];
+
+    if (!allowedRoles.includes(role)) {
+        throw new AppError('Invalid vault member role', 400)
+    }
+
+    const user = await authUser.findOne({ email: email.trim().toLowerCase() });
+
+    if (!user) {
+        throw new AppError('No user exists with this email', 404);
+    }
+
+    if (user._id.toString() === ownerId.toString()) {
+        throw new AppError('The vault owner cannot be added as a member', 400);
+    }
+
+    const existingMember = await VaultMember.findOne({ vaultId, userId: user._id })
+
+    if (existingMember) {
+        throw new AppError('User is already a vault member', 409);
+    }
+
+    try {
+        return await VaultMember.create({
+            vaultId,
+            userId: user._id,
+            role,
+            addedBy: ownerId
+        })
+    } catch (error) {
+        if (error.code === 11000) {
+            throw new AppError('User is already a vault member', 409)
+        }
+        throw error;
+    }
+
+}
+
+export const getVaultAccessService = async (userId,vaultId) => {
+    const vault = await Vault.findOne({
+        _id: vaultId,
+        isDeleted: false,
+        isArchived: false
+    });
+
+    if (!vault) {
+        throw new AppError('Vault not found', 404);
+    }
+
+    if (vault.ownerId.toString() === userId.toString()) {
+        return {
+            vault,
+            role: 'owner',
+            isOwner: true
+        };
+    }
+
+    const membership = await VaultMember.findOne({vaultId,userId});
+
+    if (!membership) {
+        throw new AppError('Vault not found', 404);
+    }
+
+    return {
+        vault,
+        role: membership.role,
+        isOwner: false,
+        membership
+    };
+};
+
+export const listVaultMembersService = async (userId,vaultId) => {
+    await getVaultAccessService(userId, vaultId);
+
+    return VaultMember
+        .find({ vaultId })
+        .populate({
+            path: 'userId',
+            select: 'username name email'
+        })
+        .populate({
+            path: 'addedBy',
+            select: 'username name'
+        })
+        .sort({ createdAt: 1 });
 };

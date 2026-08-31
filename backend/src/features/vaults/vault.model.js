@@ -38,6 +38,15 @@ const vaultSchema = new mongoose.Schema(
         isDefault: {
             type: Boolean,
             default: false
+        },
+        isDeleted: {
+            type: Boolean,
+            default: false
+        },
+
+        deletedAt: {
+            type: Date,
+            default: null
         }
     },
     {
@@ -46,7 +55,7 @@ const vaultSchema = new mongoose.Schema(
 
 );
 
-vaultSchema.index({ ownerId: 1, nameNormalized: 1 }, { unique: true });
+vaultSchema.index({ ownerId: 1, nameNormalized: 1 }, { unique: true, partialFilterExpression: { isDeleted: false } });
 vaultSchema.index({ ownerId: 1, isDefault: 1 }, { unique: true, partialFilterExpression: { isDefault: true } })
 
 export const Vault = mongoose.model('Vault', vaultSchema)
