@@ -25,7 +25,7 @@ export const listVaults = catchAsync(async (req, res) => {
 
 export const updateVault = catchAsync(async (req, res) => {
 
-    const vault = await updateVaultService(req.user.id, req, params.vaultId, req.body);
+    const vault = await updateVaultService(req.user.id, req.params.vaultId, req.body);
 
     res.status(200).json({
         message: 'vault updated successfully',
@@ -106,11 +106,11 @@ export const permanentlyDeleteVault = catchAsync(async (req, res) => {
     const { currentPassword, confirmationName } = req.body;
 
     if (typeof currentPassword !== 'string' || typeof confirmationName !== 'string') {
-        throw new AppError('Password and vault-name confirmation are required,400')
+        throw new AppError('Password and vault-name confirmation are required', 400)
     }
 
     await permanentlyDeleteVaultService(req.user.id, req.params.vaultId, currentPassword, confirmationName);
-    req.status(200).json({
+    res.status(200).json({
         message: 'Vault permanently deleted'
     })
 })

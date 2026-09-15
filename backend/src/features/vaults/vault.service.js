@@ -1,52 +1,119 @@
 import AppError from "../../utils/appError.js";
 import { authUser } from "../auth/auth.model.js";
-import { Vault } from "./vault.model";
+import { Vault } from "./vault.model.js";
 import mongoose from "mongoose";
-import bcrypt from 'bcr'
+import bcrypt from 'bcrypt'
 import { VaultMember } from "./vault-member.model.js";
+import { createEncryptionService } from "../../infrastructure/kms/kms.factory.js";
 
 
 
 export const createVaultService = async (userId, { name, description = '' }) => {
-    const cleanName = name.trim()
-    const nameNormalized = cleanName.toLowerCase();
 
-    if (cleanName.length < 2 || cleanName > 80) {
-        throw new AppError('vault name must contain between 2 and 80 characters', 400);
+    if (typeof name !== 'string') {
+        throw new AppError('Vault name must be text', 400);
     }
 
-    if (description.length > 300) {
+    if (typeof description !== 'string') {
+        throw new AppError('Vault description must be text', 400);
+    }
+
+    const cleanName = name.trim()
+    const cleanDescription = description.trim();
+    const nameNormalized = cleanName.toLowerCase();
+
+    if (cleanName.length < 2 || cleanName.length > 80) {
+        throw new AppError('vault name must contain between 2 and 80 characters', 400);
+    }
+    if (cleanDescription.length > 300) {
         throw new AppError('Vault description cannot exceed 300 characters', 400);
     }
 
-    const existingVault = await Vault.findOne({ ownerId: userId, nameNormalized })
+
+    const existingVault = await Vault.findOne({ ownerId: userId, nameNormalized, isDeleted: false })
 
     if (existingVault) {
         throw new AppError('You already have a vault with this name', 409);
     }
 
-    const existingVaultCount = await Vault.countDocuments({ ownerId: userId });
+    const existingVaultCount = await Vault.countDocuments({ ownerId: userId, isDeleted: false });
+
+    const isDefault = existingVaultCount === 0;
+
+    // Mongoose generates the _id before saving.
+    const vault = new Vault({
+        ownerId: userId,
+        name: cleanName,
+        nameNormalized,
+        description: cleanDescription,
+        isDefault,
+        isDeleted: false,
+        isArchived: false
+    });
+
+    const encryptionService = createEncryptionService();
+    const encryptedDataKey = await encryptionService.createVaultDataKey(vault._id.toString())
+    vault.encryptedDataKey = encryptedDataKey;
 
     try {
-        return await Vault.create({
-            ownerId: userId,
-            name: cleanName,
-            nameNormalized,
-            description,
-            isDefault: existingVaultCount === 0
-        })
+        // return await Vault.create({
+        //     ownerId: userId,
+        //     name: cleanName,
+        //     nameNormalized,
+        //     description,
+        //     isDefault: existingVaultCount === 0
+        // })
+
+        await vault.save()
+
     } catch (error) {
         if (error.code === 11000) {
             throw new AppError('You already have a vault with this name', 409)
         }
         throw error;
     }
-
+    return vault;
 
 }
 
 export const listUserVaultsService = async (userId) => {
-    return Vault.find({ userId: userId, isArchived: false, isDeleted: false }).sort({ isDefault: -1, createdAt: 1 })
+    const memberships = await VaultMember.find({ userId }).select('vaultId role');
+
+    const membershipMap = new Map(
+        memberships.map((membership) => [
+            membership.vaultId.toString(),
+            membership.role
+        ])
+    );
+
+    const vaults = await Vault.find({
+        isArchived: false,
+        isDeleted: false,
+        $or: [
+            { ownerId: userId },
+            {
+                _id: {
+                    $in: memberships.map(
+                        (membership) => membership.vaultId
+                    )
+                }
+            }
+        ]
+    }).sort({ isDefault: -1, createdAt: 1 });
+
+    return vaults.map((vault) => {
+        const isOwner = vault.ownerId.toString() === userId.toString();
+
+        return {
+            id: vault._id,
+            name: vault.name,
+            description: vault.description,
+            isDefault: isOwner ? vault.isDefault : false,
+            role: isOwner ? 'owner' : membershipMap.get(vault._id.toString()),
+            createdAt: vault.createdAt,
+            updatedAt: vault.updatedAt
+        };
+    });
 }
 
 export const updateVaultService = async (userId, vaultId, { name, description }) => {
@@ -278,7 +345,7 @@ export const permanentlyDeleteVaultService = async (userId, vaultId, currentPass
         throw new AppError('User no longer exists', 404);
     }
 
-    const passwordMatches = await bcrypt.compare(currentPassword, user.pass);
+    const passwordMatches = await bcrypt.compare(currentPassword, user.password);
 
     if (!passwordMatches) {
         throw new AppError('Current password is incorrect', 401);
@@ -301,7 +368,7 @@ export const permanentlyDeleteVaultService = async (userId, vaultId, currentPass
     await Vault.deleteOne({ _id: vault._id, ownerId: userId })
 }
 
-export const addVaultMemberService = async (ownerId, vaultId, ElementInternals, role = 'viewer') => {
+export const addVaultMemberService = async (ownerId, vaultId, email, role = 'viewer') => {
     const vault = await Vault.findOne({
         _id: vaultId,
         ownerId,
@@ -350,7 +417,7 @@ export const addVaultMemberService = async (ownerId, vaultId, ElementInternals, 
 
 }
 
-export const getVaultAccessService = async (userId,vaultId) => {
+export const getVaultAccessService = async (userId, vaultId) => {
     const vault = await Vault.findOne({
         _id: vaultId,
         isDeleted: false,
@@ -369,7 +436,7 @@ export const getVaultAccessService = async (userId,vaultId) => {
         };
     }
 
-    const membership = await VaultMember.findOne({vaultId,userId});
+    const membership = await VaultMember.findOne({ vaultId, userId });
 
     if (!membership) {
         throw new AppError('Vault not found', 404);
@@ -383,7 +450,7 @@ export const getVaultAccessService = async (userId,vaultId) => {
     };
 };
 
-export const listVaultMembersService = async (userId,vaultId) => {
+export const listVaultMembersService = async (userId, vaultId) => {
     await getVaultAccessService(userId, vaultId);
 
     return VaultMember

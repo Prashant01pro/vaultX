@@ -47,6 +47,20 @@ const vaultSchema = new mongoose.Schema(
         deletedAt: {
             type: Date,
             default: null
+        },
+        encryptedDataKey: {
+            ciphertext: {
+                type: String,
+                required: true
+            },
+            keyId: {
+                type: String,
+                required: true
+            },
+            keyVersion: {
+                type: Number,
+                required: true
+            }
         }
     },
     {

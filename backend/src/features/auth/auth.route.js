@@ -4,6 +4,7 @@ import { authenticateToken } from "./auth.middleware.js";
 import { csrfProtection } from "./csrf.middleware.js";
 import { authorizeRoles } from "./role.middleware.js";
 import { authorizePermissions } from "./permissions.middleware.js";
+import { authorizeAdminOrSelf } from "./authorization.middleware.js";
 
 const router = express.Router()
 
@@ -27,13 +28,6 @@ router.delete('/users/:id', authenticateToken, authorizePermissions('users:delet
         message: 'User deletion is allowed'
     })
 })
-
-router.delete('/users/:id',authenticateToken,authorizeRoles('admin'),(req, res) => {
-        res.status(200).json({
-            message: 'Only admins can delete users'
-        });
-    }
-);
 
 router.patch('/users/:id/access',authenticateToken,authorizeRoles('admin'),authorizePermissions('users:manage'),(req, res) => {
         res.status(200).json({

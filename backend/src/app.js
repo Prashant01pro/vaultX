@@ -2,6 +2,7 @@ import express from "express"
 import { globalErrorHandler } from "./middlewares/error.middleware.js";
 import authRouter from "./features/auth/auth.route.js"
 import vaultRouter from './features/vaults/vault.route.js'
+import secretRouter from './features/secrets/login/secret.route.js'
 import cookieParser from "cookie-parser"
 
 const app = express();
@@ -14,6 +15,7 @@ app.use(cookieParser())
 
 app.use('/auth',authRouter)
 app.use('/vaults',vaultRouter)
+app.use('/vaults', secretRouter);
 
 app.get('/health',(req,res)=>{
     res.status(200).json({
