@@ -84,6 +84,40 @@ const authSchema = new mongoose.Schema(
         providerId: {
             type: String,
             select: false
+        },
+        preferences: {
+            theme: {
+                type: String,
+                enum: ['light', 'dark', 'system'],
+                default: 'system'
+            },
+            timezone: {
+                type: String,
+                default: 'UTC'
+            },
+            notifications: {
+                security: {
+                    type: Boolean,
+                    default: true
+                },
+                login: {
+                    type: Boolean,
+                    default: true
+                },
+                expiration: {
+                    type: Boolean,
+                    default: true
+                }
+            }
+        },
+        isActive: {
+            type: Boolean,
+            default: true
+        },
+
+        deactivatedAt: {
+            type: Date,
+            default: null
         }
     },
     {

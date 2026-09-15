@@ -1,0 +1,20 @@
+# 1. Create branch and switch to it
+git switch -c auth-changes
+
+# 2. Stage changes
+git add .
+
+# 3. Create commit
+git commit -m "Update authentication feature"
+
+# 4. Push branch to GitHub and set tracking
+git push -u origin auth-changes
+
+
+After that, if you make more changes:
+
+git add .
+git commit -m "Another auth update"
+git push
+
+You don't need to specify origin auth-changes again because -u already established that relationship.
