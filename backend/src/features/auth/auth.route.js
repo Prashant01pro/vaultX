@@ -1,34 +1,32 @@
 import express from "express"
-import { register, login, refreshToken, logout, logoutAllDevices, resetPassword, forgotPassword, verifyEmail, changePassword } from "./auth.controller.js"
+import { register, login, refreshToken, logout, logoutAllDevices, resetPassword, forgotPassword, verifyEmail, changePassword, currentUser, googleLogin, googleCallback, githubLogin, githubCallback, listSessions, revokeSession } from "./auth.controller.js"
 import { authenticateToken } from "./auth.middleware.js";
 import { csrfProtection } from "./csrf.middleware.js";
 import { authorizeRoles } from "./role.middleware.js";
 import { authorizePermissions } from "./permissions.middleware.js";
+import { authorizeAdminOrSelf } from "./authorization.middleware.js";
+import { loginLimiter, passwordLimiter, refreshLimiter, registerLimiter } from "../../config/rate-limit.js";
 
 const router = express.Router()
 
-router.post('/register', register);
-router.post('/login', login)
-router.post('/refresh', csrfProtection, refreshToken);
+router.post('/register',registerLimiter, register);
+router.post('/login',loginLimiter, login)
+router.post('/refresh',refreshLimiter, csrfProtection, refreshToken);
 router.post('/logout', csrfProtection, logout);
 router.post('/logout-all', authenticateToken, csrfProtection, logoutAllDevices)
-router.post('/reset-password', resetPassword);
-router.post('/forgot-password', forgotPassword);
-router.post('/verify-email', verifyEmail);
+router.post('/reset-password',passwordLimiter, resetPassword);
+router.post('/forgot-password',passwordLimiter, forgotPassword);
+router.post('/verify-email', passwordLimiter, verifyEmail);
 router.post('/change-password', authenticateToken, csrfProtection, changePassword);
+router.get('/me', authenticateToken, currentUser);
+
 router.get('/admin-only', authenticateToken, authorizeRoles('admin'), (req, res) => {
     res.status(200).json({
         message: 'Only admins can access this route'
     })
 });
 
-router.delete('/users/:id', authenticateToken, authorizePermissions('users:delete'), (req, res) => {
-    res.status(200).json({
-        message: 'User deletion is allowed'
-    })
-})
-
-router.delete('/users/:id',authenticateToken,authorizeRoles('admin'),(req, res) => {
+router.delete('/users/:id',authenticateToken,authorizeRoles('admin'),authorizePermissions('users:delete'),(req, res) => {
         res.status(200).json({
             message: 'Only admins can delete users'
         });
@@ -55,6 +53,15 @@ router.get('/protected', authenticateToken, (req, res) => {
         message: `Hello i am ${req.user.username} ,I have the access to this route`
     })
 })
+
+router.get('/google',googleLogin);
+router.get('/google/callback',googleCallback)
+
+router.get('/github',githubLogin);
+router.get('/github/callback',githubCallback)
+
+router.get('/sessions',authenticateToken,listSessions)
+router.delete('/sessions/:sessionId',authenticateToken,csrfProtection,revokeSession)
 
 export default router
 

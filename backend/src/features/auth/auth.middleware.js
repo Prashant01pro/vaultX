@@ -74,9 +74,9 @@ export const authenticateToken = catchAsync(
         let decoded;
 
         try {
-            decoded = jwt.verify(token,process.env.JWT_ACCESS_SECRET);
+            decoded = jwt.verify(token, process.env.JWT_ACCESS_SECRET);
         } catch (error) {
-            throw new AppError('Invalid or expired access token',401);
+            throw new AppError('Invalid or expired access token', 401);
         }
 
         const session = await authSession.findOne({
@@ -87,10 +87,15 @@ export const authenticateToken = catchAsync(
         });
 
         if (!session) {
-            throw new AppError('This session is no longer active',401);
+            throw new AppError('This session is no longer active', 401);
         }
 
         const user = await authUser.findById(decoded.id);
+
+        // for implementing deactivate account feature //Reject inactive accounts during authentication
+        if (user.isActive === false) {
+            throw new AppError('This account has been deactivated',401);
+        }
 
         if (!user) {
             throw new AppError('User no longer exists', 401);
@@ -106,9 +111,28 @@ export const authenticateToken = catchAsync(
         // req.user = decoded;
         req.user = {
             ...decoded,
-            role:user.role,
-            permissions:user.permissions
+            username: user.username,
+            role: user.role,
+            permissions: user.permissions
         };
+
+
+        const now = new Date();
+
+        await authSession.updateOne(
+            { _id: session._id },
+            {
+                $set: {
+                    lastUsedAt: now
+                }
+            }
+        );
+
+        //- lastUsedAt: null occurs because your code currently updates lastUsedAt only during refresh - token rotation, not during normal authenticated requests.
+        // Update authenticateToken after the session is found:
+        session.lastUsedAt = now;
+
+
         req.session = session;
 
         next();

@@ -3,9 +3,10 @@ import { authUser } from './auth.model.js'
 import AppError from '../../utils/appError.js'
 import jwt from "jsonwebtoken";
 
-import crypto, { setEngine } from "crypto";
+import crypto, { createDecipheriv } from "crypto";
 import mongoose from 'mongoose';
 import { authSession } from './auth.session.model.js';
+import { currentUser } from './auth.controller.js';
 
 const REFRESH_TOKEN_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS = 5;
@@ -36,8 +37,8 @@ const generateAccessToken = (user, sid) => {
     return jwt.sign(
         {
             id: user._id.toString(),
-            username: user.username,
-            role:user.role,
+            // username: user.username,
+            // role: user.role,
             sid,
             tokenVersion: user.tokenVersion
         },
@@ -67,7 +68,7 @@ const generateCsrfToken = () => {
     return crypto.randomBytes(32).toString('hex');
 };
 
-const createSessionAndTokens = async (user, req) => {
+export const createSessionAndTokens = async (user, req) => {
     const sessionId = new mongoose.Types.ObjectId().toString();
 
     const refreshTokenId = crypto.randomUUID();
@@ -147,7 +148,7 @@ export const registerUserService = async (username, name, email, password) => {
             password: hashedPassword,
             isEmailVerified: false,
             emailVerificationTokenHash: verificationTokenHash,
-            emailVerificationExpires: new Date(Date.now() + 24 * 60 * 1000)
+            emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000)
         })
 
         const verificationLink = `${process.env.CLIENT_URL}/verify-email/${verificationToken}`;
@@ -186,9 +187,18 @@ export const loginUserService = async (email, password, req) => {
         throw new AppError("Invalid Email or Password", 401)
     }
 
+    // add for implement deactivate account feature
+    if (user.isActive === false) {
+    throw new AppError('This account has been deactivated',403);
+}
+
     //lockout feature:
     // Check whether the account is currently locked.
-    if (user.lockedUntil && user.lockedUntil <= now) {
+    if (user.lockedUntil && user.lockedUntil > new Date()) {
+        throw new AppError('Account temporarily locked. Please try again later.', 423);
+    }
+
+    if (user.lockedUntil && user.lockedUntil <= new Date()) {
         user.failedLoginAttempts = 0;
         user.lockedUntil = null;
 
@@ -206,12 +216,16 @@ export const loginUserService = async (email, password, req) => {
         }
 
         await user.save();
-        throw new AppError("Invalid Email or Password",401)
+        throw new AppError("Invalid Email or Password", 401)
+    }
+
+    if (user.authProvider === 'local' && !user.isEmailVerified) {
+        throw new AppError('Please verify your email before logging in', 403);
     }
 
     // Successful login clears previous failures.
-    user.failedLoginAttempts=0;
-    user.lockedUntil=null;
+    user.failedLoginAttempts = 0;
+    user.lockedUntil = null;
 
     await user.save();
 
@@ -467,7 +481,7 @@ export const forgotPasswordService = async (email) => {
     user.passwordResetTokenHash = resetTokenHash;
 
     //valid for 15 minute
-    user.passwordResetExpires = new Date(Date.now + 15 * 60 * 1000);
+    user.passwordResetExpires = new Date(Date.now() + 15 * 60 * 1000);
     await user.save();
 
     const resetLink = `${process.env.CLIENT_URL}/reset-password/${resetToken}`;
@@ -533,3 +547,235 @@ export const changePasswordService = async (userId, currentPassword, newPassword
     );
 }
 
+export const googleLoginService = async (authorizationCode, req) => {
+    const tokenResponse = await fetch('http://oauth2.googleapis.com/token', {
+        method: "POST",
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+            code: authorizationCode,
+            client_id: process.env.GOOGLE_CLIENT_ID,
+            client_secret: process.env.GOOGLE_CLIENT_SECRET,
+            redirect_uri: process.env.GOOGLE_CALLBACK_URL,
+            grant_type: 'authorization_code'
+        })
+    });
+
+    const tokenData = await tokenResponse.json();
+
+    if (!tokenResponse.ok || !tokenData.access_token) {
+        throw new AppError('Google authorization failed', 401);
+    }
+
+    const profileResponse = await fetch('https://openidconnect.googleapis.com/v1/userinfo', {
+        headers: { Authorization: `Bearer ${tokenData.access_token}` }
+    })
+
+    const googleProfile = await profileResponse.json();
+
+    if (!profileResponse.ok || !googleProfile.sub || !googleProfile.email) {
+        throw new AppError('Could not receive Google profile', 401)
+    }
+
+    if (!googleProfile.email_verified) {
+        throw new AppError('Google email is not verified', 403);
+    }
+
+    let user = await authUser.findOne({
+        authProvider: 'google',
+        providerId: googleProfile.sub
+    })
+
+    if (!user) {
+        const existingEmailUser = await authUser.findOne({ email: googleProfile.email });
+        if (existingEmailUser) {
+            throw new AppError('An account with this email already exists. Log in with your password first', 409)
+        }
+    }
+
+    if (user) {
+        const tokens = await createSessionAndTokens(user, req);
+        return { user, ...tokens };
+    }
+
+    const baseUsername = googleProfile.email
+        .split('@')[0]
+        .replace(/[^a-zA-Z0-9_]/g, '')
+        .slice(0, 20) || 'googleuser';
+
+    const username = `${baseUsername}_${crypto
+        .randomBytes(3)
+        .toString('hex')}`;
+
+    const randomPassword = crypto.randomBytes(32).toString('hex');
+    const salt = await bcrypt.genSalt(12)
+
+    const hashPassword = await bcrypt.hash(randomPassword, salt)
+
+    user = await authUser.create({
+        username,
+        name: googleProfile.name || googleProfile.email.trim().toLowerCase(),
+        email: googleProfile.email.trim().toLowerCase(),
+        password: hashPassword,
+        authProvider: 'google',
+        providerId: googleProfile.sub,
+        isEmailVerified: true
+    })
+
+    const tokens = await createSessionAndTokens(user, req);
+
+    return {
+        user,
+        ...tokens
+    }
+}
+
+export const githubLoginService = async (authorizationCode, req) => {
+    const tokenResponse = await fetch('https://github.com/login/oauth/access_token',
+        {
+            method: 'POST',
+            headers: {
+                Accept: 'application/json',
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: new URLSearchParams({
+                client_id: process.env.GITHUB_CLIENT_ID,
+                client_secret: process.env.GITHUB_CLIENT_SECRET,
+                code: authorizationCode,
+                redirect_uri: process.env.GITHUB_CALLBACK_URL
+            })
+        }
+    );
+
+    const tokenData = await tokenResponse.json();
+
+    if (!tokenResponse.ok || !tokenData.access_token) {
+        throw new AppError('GitHub authorization failed', 401);
+    }
+
+    const githubHeaders = {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${tokenData.access_token}`,
+        'X-GitHub-Api-Version': '2022-11-28',
+        'User-Agent': 'vaultX'
+    };
+
+    const profileResponse = await fetch('https://api.github.com/user',
+        {
+            headers: githubHeaders
+        }
+    );
+
+    const githubProfile = await profileResponse.json();
+
+    if (!profileResponse.ok || !githubProfile.id) {
+        throw new AppError('Could not retrieve GitHub profile', 401);
+    }
+
+    const emailResponse = await fetch('https://api.github.com/user/emails',
+        {
+            headers: githubHeaders
+        }
+    );
+
+    const githubEmails = await emailResponse.json();
+
+    if (!emailResponse.ok || !Array.isArray(githubEmails)) {
+        throw new AppError('Could not retrieve GitHub email', 401);
+    }
+
+    const verifiedEmail =
+        githubEmails.find((email) => email.primary && email.verified);
+
+    if (!verifiedEmail) {
+        throw new AppError('No verified GitHub email was found', 403);
+    }
+
+    const providerId = String(githubProfile.id);
+
+    let user = await authUser.findOne({ authProvider: 'github', providerId });
+
+    if (!user) {
+        const existingEmailUser =
+            await authUser.findOne({ email: verifiedEmail.email.trim().toLowerCase() });
+
+        if (existingEmailUser) {
+            throw new AppError('An account with this email already exists. Log in with your password first.', 409);
+        }
+
+        const baseUsername = githubProfile.login
+            .replace(/[^a-zA-Z0-9_]/g, '')
+            .slice(0, 20) || 'githubuser';
+
+        const username = `${baseUsername}_${crypto.randomBytes(3).toString('hex')}`;
+
+        const randomPassword = crypto.randomBytes(32).toString('hex');
+
+        const salt = await bcrypt.genSalt(12);
+
+        const hashedPassword = await bcrypt.hash(randomPassword, salt);
+
+        user = await authUser.create({
+            username,
+            name:
+                githubProfile.name ||
+                githubProfile.login,
+            email:
+                verifiedEmail.email
+                    .trim()
+                    .toLowerCase(),
+            password: hashedPassword,
+            authProvider: 'github',
+            providerId,
+            isEmailVerified: true
+        });
+    }
+
+    const tokens = await createSessionAndTokens(user, req);
+
+    return {
+        user,
+        ...tokens
+    };
+
+
+}
+
+export const listUserSessionService = async (userId, currentSessionId) => {
+    const session = await authSession.find({
+        userId,
+        revokedAt: null,
+        expiresAt: { $gt: new Date() }
+    }).sort({ lastUsedAt: -1, createAt: -1 });
+
+    return session.map((session) => ({
+        id: session._id,
+        userAgent: session.userAgent,
+        ipAddress: session.ipAddress,
+        createdAt: session.createdAt,
+        lastUsedAt: session.lastUsedAt,
+        expiresAt: session.expiresAt,
+        current: session._id.toString() === currentSessionId
+    }))
+}
+
+export const revokeUserSessionService = async (userId, sessionId) => {
+    const session = await authSession.findOneAndUpdate(
+        {
+            _id: sessionId,
+            userId,
+            revokedAt: null
+        },
+        {
+            $set: {
+                revokedAt: new Date()
+            }
+        },
+        { new: true }
+    )
+
+    if (!session) {
+        throw new AppError('Session not found or already revoked',404);
+    }
+
+    return session;
+}
